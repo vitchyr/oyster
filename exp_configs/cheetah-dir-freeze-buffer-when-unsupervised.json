@@ -17,7 +17,7 @@
         "num_exp_traj_eval": 2,
         "embedding_batch_size": 256,
         "num_iterations_with_reward_supervision": 100,
-        "freeze_encoder_buffer_in_unsupervised_phase": false,
+        "freeze_encoder_buffer_in_unsupervised_phase": true,
         "embedding_mini_batch_size": 256
     }
 }
