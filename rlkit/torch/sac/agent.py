@@ -46,6 +46,7 @@ class PEARLAgent(nn.Module):
                  latent_dim,
                  context_encoder,
                  policy,
+                 reward_predictor,
                  **kwargs
     ):
         super().__init__()
@@ -53,6 +54,7 @@ class PEARLAgent(nn.Module):
 
         self.context_encoder = context_encoder
         self.policy = policy
+        self.reward_predictor = reward_predictor
 
         self.recurrent = kwargs['recurrent']
         self.use_ib = kwargs['use_information_bottleneck']
@@ -122,8 +124,11 @@ class PEARLAgent(nn.Module):
 
     def infer_posterior(self, context):
         ''' compute q(z|c) as a function of input context and sample new z from it'''
-        params = self.context_encoder(context)
-        params = params.view(context.size(0), -1, self.context_encoder.output_size)
+        try:
+            params = self.context_encoder(context)
+            params = params.view(context.size(0), -1, self.context_encoder.output_size)
+        except TypeError:
+            import ipdb; ipdb.set_trace()
         # with probabilistic z, predict mean and variance of q(z | c)
         if self.use_ib:
             mu = params[..., :self.latent_dim]
@@ -171,6 +176,14 @@ class PEARLAgent(nn.Module):
         policy_outputs = self.policy(in_, reparameterize=True, return_log_prob=True)
 
         return policy_outputs, task_z
+
+    def infer_reward(self, obs, action):
+        z = self.z
+        obs = ptu.from_numpy(obs[None])
+        action = ptu.from_numpy(action[None])
+        # in_ = torch.cat([obs, action, z], dim=self.z)
+        reward = self.reward_predictor(obs, action, z)
+        return ptu.get_numpy(reward)[0]
 
     def log_diagnostics(self, eval_statistics):
         '''

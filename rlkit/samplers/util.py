@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def rollout(env, agent, max_path_length=np.inf, accum_context=True, animated=False, save_frames=False):
+def rollout(env, agent, max_path_length=np.inf, accum_context=True, animated=False, save_frames=False, use_predicted_reward=False):
     """
     The following value for the following keys will be a 2D array, with the
     first dimension corresponding to the time dimension.
@@ -39,6 +39,8 @@ def rollout(env, agent, max_path_length=np.inf, accum_context=True, animated=Fal
     while path_length < max_path_length:
         a, agent_info = agent.get_action(o)
         next_o, r, d, env_info = env.step(a)
+        if use_predicted_reward:
+            r = agent.infer_reward(o, a)
         # update the agent's current context
         if accum_context:
             agent.update_context([o, a, r, next_o, d, env_info])

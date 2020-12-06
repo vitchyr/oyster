@@ -21,6 +21,10 @@ from configs.default import default_config
 
 
 def experiment(variant):
+    # debugging triggers a lot of printing and logs to a debug directory
+    DEBUG = variant['util_params']['debug']
+    os.environ['DEBUG'] = str(int(DEBUG))
+
 
     # create multi-task environment and sample tasks
     env = NormalizedBoxEnv(ENVS[variant['env_name']](**variant['env_params']))
@@ -63,10 +67,16 @@ def experiment(variant):
         latent_dim=latent_dim,
         action_dim=action_dim,
     )
+    reward_predictor = FlattenMlp(
+        hidden_sizes=[200, 200, 200],
+        input_size=obs_dim + action_dim + latent_dim,
+        output_size=1,
+    )
     agent = PEARLAgent(
         latent_dim,
         context_encoder,
         policy,
+        reward_predictor,
         **variant['algo_params']
     )
     algorithm = PEARLSoftActorCritic(
@@ -94,14 +104,13 @@ def experiment(variant):
     if ptu.gpu_enabled():
         algorithm.to()
 
-    # debugging triggers a lot of printing and logs to a debug directory
-    DEBUG = variant['util_params']['debug']
-    os.environ['DEBUG'] = str(int(DEBUG))
-
     # create logging directory
     # TODO support Docker
     exp_id = 'debug' if DEBUG else None
-    experiment_log_dir = setup_logger(variant['env_name'], variant=variant, exp_id=exp_id, base_log_dir=variant['util_params']['base_log_dir'])
+    experiment_log_dir = setup_logger(
+        'dev',
+        # variant['env_name'],
+        variant=variant, exp_id=exp_id, base_log_dir=variant['util_params']['base_log_dir'])
 
     # optionally save eval trajectories as pkl files
     if variant['algo_params']['dump_eval_paths']:

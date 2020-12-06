@@ -46,6 +46,7 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
             render_eval_paths=False,
             dump_eval_paths=False,
             plotter=None,
+            num_iterations_with_reward_supervision=np.inf,
     ):
         """
         :param env: training env
@@ -84,6 +85,7 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
         self.save_replay_buffer = save_replay_buffer
         self.save_algorithm = save_algorithm
         self.save_environment = save_environment
+        self.num_iterations_with_reward_supervision = num_iterations_with_reward_supervision
 
         self.eval_statistics = None
         self.render_eval_paths = render_eval_paths
@@ -120,6 +122,7 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
         self._old_table_keys = None
         self._current_path_builder = PathBuilder()
         self._exploration_paths = []
+        self.in_unsupervised_phase = False
 
     def make_exploration_policy(self, policy):
          return policy
@@ -162,22 +165,25 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
                     self.task_idx = idx
                     self.env.reset_task(idx)
                     self.collect_data(self.num_initial_steps, 1, np.inf)
+            self.in_unsupervised_phase = (it_ >= self.num_iterations_with_reward_supervision)
             # Sample data from train tasks.
             for i in range(self.num_tasks_sample):
                 idx = np.random.randint(len(self.train_tasks))
                 self.task_idx = idx
                 self.env.reset_task(idx)
-                self.enc_replay_buffer.task_buffers[idx].clear()
+                if not self.in_unsupervised_phase:
+                    # Just keep the latest version if not in supervised phase
+                    self.enc_replay_buffer.task_buffers[idx].clear()
 
                 # collect some trajectories with z ~ prior
                 if self.num_steps_prior > 0:
-                    self.collect_data(self.num_steps_prior, 1, np.inf)
+                    self.collect_data(self.num_steps_prior, 1, np.inf, use_predicted_reward=self.in_unsupervised_phase)
                 # collect some trajectories with z ~ posterior
                 if self.num_steps_posterior > 0:
-                    self.collect_data(self.num_steps_posterior, 1, self.update_post_train)
+                    self.collect_data(self.num_steps_posterior, 1, self.update_post_train, use_predicted_reward=self.in_unsupervised_phase)
                 # even if encoder is trained only on samples from the prior, the policy needs to learn to handle z ~ posterior
                 if self.num_extra_rl_steps_posterior > 0:
-                    self.collect_data(self.num_extra_rl_steps_posterior, 1, self.update_post_train, add_to_enc_buffer=False)
+                    self.collect_data(self.num_extra_rl_steps_posterior, 1, self.update_post_train, add_to_enc_buffer=False, use_predicted_reward=self.in_unsupervised_phase)
 
             # Sample train tasks and compute gradient updates on parameters.
             for train_step in range(self.num_train_steps_per_itr):
@@ -200,7 +206,7 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
         """
         pass
 
-    def collect_data(self, num_samples, resample_z_rate, update_posterior_rate, add_to_enc_buffer=True):
+    def collect_data(self, num_samples, resample_z_rate, update_posterior_rate, add_to_enc_buffer=True, use_predicted_reward=False):
         '''
         get trajectories from current env in batch mode with given policy
         collect complete trajectories until the number of collected transitions >= num_samples
@@ -210,23 +216,30 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
         :param resample_z_rate: how often to resample latent context z (in units of trajectories)
         :param update_posterior_rate: how often to update q(z | c) from which z is sampled (in units of trajectories)
         :param add_to_enc_buffer: whether to add collected data to encoder replay buffer
+        :param use_predicted_reward: whether to replace the env reward with the predicted reward to simulate not having access to rewards.
         '''
         # start from the prior
         self.agent.clear_z()
 
         num_transitions = 0
         while num_transitions < num_samples:
-            paths, n_samples = self.sampler.obtain_samples(max_samples=num_samples - num_transitions,
-                                                                max_trajs=update_posterior_rate,
-                                                                accum_context=False,
-                                                                resample=resample_z_rate)
+            paths, n_samples = self.sampler.obtain_samples(
+                max_samples=num_samples - num_transitions,
+                max_trajs=update_posterior_rate,
+                accum_context=False,
+                resample=resample_z_rate,
+                use_predicted_reward=use_predicted_reward,
+            )
             num_transitions += n_samples
             self.replay_buffer.add_paths(self.task_idx, paths)
-            if add_to_enc_buffer:
+            if add_to_enc_buffer and not use_predicted_reward:
                 self.enc_replay_buffer.add_paths(self.task_idx, paths)
             if update_posterior_rate != np.inf:
-                context = self.sample_context(self.task_idx)
-                self.agent.infer_posterior(context)
+                pass
+                # context = self.sample_context(self.task_idx)
+                # self.agent.clear_z()
+                # HACK: try just resampling from the prior
+                # self.agent.infer_posterior(context)
         self._n_env_steps_total += num_transitions
         gt.stamp('sample')
 
@@ -264,6 +277,7 @@ class MetaRLAlgorithm(metaclass=abc.ABCMeta):
             epoch_time = train_time + sample_time + eval_time
             total_time = gt.get_times().total
 
+            logger.record_tabular('in_unsupervised_model', self.in_unsupervised_phase)
             logger.record_tabular('Train Time (s)', train_time)
             logger.record_tabular('(Previous) Eval Time (s)', eval_time)
             logger.record_tabular('Sample Time (s)', sample_time)

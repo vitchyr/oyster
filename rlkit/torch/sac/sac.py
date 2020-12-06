@@ -32,6 +32,7 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             use_information_bottleneck=True,
             use_next_obs_in_context=False,
             sparse_rewards=False,
+            back_prop_reward_prediction_into_encoder=False,
 
             soft_target_tau=1e-2,
             plotter=None,
@@ -52,6 +53,7 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         self.policy_pre_activation_weight = policy_pre_activation_weight
         self.plotter = plotter
         self.render_eval_paths = render_eval_paths
+        self.back_prop_reward_prediction_into_encoder = back_prop_reward_prediction_into_encoder
 
         self.recurrent = recurrent
         self.latent_dim = latent_dim
@@ -59,6 +61,7 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         self.vf_criterion = nn.MSELoss()
         self.vib_criterion = nn.MSELoss()
         self.l2_reg_criterion = nn.MSELoss()
+        self.reward_pred_criterion = nn.MSELoss()
         self.kl_lambda = kl_lambda
 
         self.use_information_bottleneck = use_information_bottleneck
@@ -86,6 +89,10 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         )
         self.context_optimizer = optimizer_class(
             self.agent.context_encoder.parameters(),
+            lr=context_lr,
+        )
+        self.reward_predictor_optimizer = optimizer_class(
+            self.agent.reward_predictor.parameters(),
             lr=context_lr,
         )
 
@@ -128,7 +135,7 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         unpacked = [torch.cat(x, dim=0) for x in unpacked]
         return unpacked
 
-    def sample_context(self, indices):
+    def sample_context(self, indices, also_return_dict=False):
         ''' sample batch of context from a list of tasks from the replay buffer '''
         # make method work given a single task index
         if not hasattr(indices, '__iter__'):
@@ -145,7 +152,14 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             context = torch.cat(context[:-1], dim=2)
         else:
             context = torch.cat(context[:-2], dim=2)
-        return context
+
+        if also_return_dict:
+            context_dict = {}
+            for k in batches[0]:
+                context_dict[k] = torch.stack([d[k] for d in batches], dim=0)
+            return context, context_dict
+        else:
+            return context
 
     ##### Training #####
     def _do_training(self, indices):
@@ -153,7 +167,7 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         num_updates = self.embedding_batch_size // mb_size
 
         # sample context batch
-        context_batch = self.sample_context(indices)
+        context_batch, context_dict = self.sample_context(indices, also_return_dict=True)
 
         # zero out context and hidden encoder state
         self.agent.clear_z(num_tasks=len(indices))
@@ -161,7 +175,10 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         # do this in a loop so we can truncate backprop in the recurrent encoder
         for i in range(num_updates):
             context = context_batch[:, i * mb_size: i * mb_size + mb_size, :]
-            self._take_step(indices, context)
+            minibatch_context_dict = {}
+            for k in ['rewards', 'observations', 'actions']:
+                minibatch_context_dict[k] = context_dict[k][:, i * mb_size: i * mb_size + mb_size, :]
+            self._take_step(indices, context, minibatch_context_dict)
 
             # stop backprop
             self.agent.detach_z()
@@ -175,7 +192,7 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
     def _update_target_network(self):
         ptu.soft_update_from_to(self.vf, self.target_vf, self.soft_target_tau)
 
-    def _take_step(self, indices, context):
+    def _take_step(self, indices, context, context_dict):
 
         num_tasks = len(indices)
 
@@ -208,6 +225,20 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             kl_loss = self.kl_lambda * kl_div
             kl_loss.backward(retain_graph=True)
 
+        # reward prediction loop
+        t_rp, b_rp, _ = context_dict['observations'].shape
+        obs_rp = context_dict['observations'].view(t_rp * b_rp, -1)
+        actions_rp = context_dict['actions'].view(t_rp * b_rp, -1)
+        _, task_z_rp = self.agent(context_dict['observations'], context)
+        if self.back_prop_reward_prediction_into_encoder:
+            reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp)
+        else:
+            reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp.detach())
+
+        rewards_rp = context_dict['rewards'].view(t_rp * b_rp, -1)
+        reward_pred_loss = self.reward_pred_criterion(reward_pred, rewards_rp)
+        self.reward_predictor_optimizer.zero_grad()
+
         # qf and encoder update (note encoder does not get grads from policy or vf)
         self.qf1_optimizer.zero_grad()
         self.qf2_optimizer.zero_grad()
@@ -217,10 +248,12 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         terms_flat = terms.view(self.batch_size * num_tasks, -1)
         q_target = rewards_flat + (1. - terms_flat) * self.discount * target_v_values
         qf_loss = torch.mean((q1_pred - q_target) ** 2) + torch.mean((q2_pred - q_target) ** 2)
+        reward_pred_loss.backward()
         qf_loss.backward()
         self.qf1_optimizer.step()
         self.qf2_optimizer.step()
         self.context_optimizer.step()
+        self.reward_predictor_optimizer.step()
 
         # compute min Q on the new actions
         min_q_new_actions = self._min_q(obs, new_actions, task_z)
@@ -272,6 +305,8 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             self.eval_statistics['Policy Loss'] = np.mean(ptu.get_numpy(
                 policy_loss
             ))
+            self.eval_statistics['Reward Prediction Loss'] = np.mean(
+                ptu.get_numpy(reward_pred_loss))
             self.eval_statistics.update(create_stats_ordered_dict(
                 'Q Predictions',
                 ptu.get_numpy(q1_pred),
