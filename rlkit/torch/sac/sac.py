@@ -34,6 +34,8 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             sparse_rewards=False,
             back_prop_reward_prediction_into_encoder=False,
 
+            train_reward_pred_in_unsupervised_phase=False,
+
             soft_target_tau=1e-2,
             plotter=None,
             render_eval_paths=False,
@@ -54,6 +56,8 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         self.plotter = plotter
         self.render_eval_paths = render_eval_paths
         self.back_prop_reward_prediction_into_encoder = back_prop_reward_prediction_into_encoder
+
+        self.train_reward_pred_in_unsupervised_phase = train_reward_pred_in_unsupervised_phase
 
         self.recurrent = recurrent
         self.latent_dim = latent_dim
@@ -226,18 +230,19 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             kl_loss.backward(retain_graph=True)
 
         # reward prediction loop
-        t_rp, b_rp, _ = context_dict['observations'].shape
-        obs_rp = context_dict['observations'].view(t_rp * b_rp, -1)
-        actions_rp = context_dict['actions'].view(t_rp * b_rp, -1)
-        _, task_z_rp = self.agent(context_dict['observations'], context)
-        if self.back_prop_reward_prediction_into_encoder:
-            reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp)
-        else:
-            reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp.detach())
+        if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
+            t_rp, b_rp, _ = context_dict['observations'].shape
+            obs_rp = context_dict['observations'].view(t_rp * b_rp, -1)
+            actions_rp = context_dict['actions'].view(t_rp * b_rp, -1)
+            _, task_z_rp = self.agent(context_dict['observations'], context)
+            if self.back_prop_reward_prediction_into_encoder:
+                reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp)
+            else:
+                reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp.detach())
 
-        rewards_rp = context_dict['rewards'].view(t_rp * b_rp, -1)
-        reward_pred_loss = self.reward_pred_criterion(reward_pred, rewards_rp)
-        self.reward_predictor_optimizer.zero_grad()
+            rewards_rp = context_dict['rewards'].view(t_rp * b_rp, -1)
+            reward_pred_loss = self.reward_pred_criterion(reward_pred, rewards_rp)
+            self.reward_predictor_optimizer.zero_grad()
 
         # qf and encoder update (note encoder does not get grads from policy or vf)
         self.qf1_optimizer.zero_grad()
@@ -248,12 +253,14 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
         terms_flat = terms.view(self.batch_size * num_tasks, -1)
         q_target = rewards_flat + (1. - terms_flat) * self.discount * target_v_values
         qf_loss = torch.mean((q1_pred - q_target) ** 2) + torch.mean((q2_pred - q_target) ** 2)
-        reward_pred_loss.backward()
+        if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
+            reward_pred_loss.backward()
         qf_loss.backward()
         self.qf1_optimizer.step()
         self.qf2_optimizer.step()
         self.context_optimizer.step()
-        self.reward_predictor_optimizer.step()
+        if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
+            self.reward_predictor_optimizer.step()
 
         # compute min Q on the new actions
         min_q_new_actions = self._min_q(obs, new_actions, task_z)
@@ -305,8 +312,11 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             self.eval_statistics['Policy Loss'] = np.mean(ptu.get_numpy(
                 policy_loss
             ))
-            self.eval_statistics['Reward Prediction Loss'] = np.mean(
-                ptu.get_numpy(reward_pred_loss))
+            if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
+                self.eval_statistics['Reward Prediction Loss'] = np.mean(
+                    ptu.get_numpy(reward_pred_loss))
+            else:
+                self.eval_statistics['Reward Prediction Loss'] = 0
             self.eval_statistics.update(create_stats_ordered_dict(
                 'Q Predictions',
                 ptu.get_numpy(q1_pred),

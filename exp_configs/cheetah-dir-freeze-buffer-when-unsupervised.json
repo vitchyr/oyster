@@ -16,8 +16,9 @@
         "num_steps_per_eval": 600,
         "num_exp_traj_eval": 2,
         "embedding_batch_size": 256,
-        "num_iterations_with_reward_supervision": 100,
+        "num_iterations_with_reward_supervision": 10,
         "freeze_encoder_buffer_in_unsupervised_phase": true,
+        "train_reward_pred_in_unsupervised_phase": false,
         "embedding_mini_batch_size": 256
     }
 }

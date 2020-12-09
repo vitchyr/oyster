@@ -20,7 +20,7 @@ import rlkit.torch.pytorch_util as ptu
 from configs.default import default_config
 
 
-def experiment(variant):
+def experiment(variant, exp_name):
     # debugging triggers a lot of printing and logs to a debug directory
     DEBUG = variant['util_params']['debug']
     os.environ['DEBUG'] = str(int(DEBUG))
@@ -106,10 +106,15 @@ def experiment(variant):
 
     # create logging directory
     # TODO support Docker
-    exp_id = 'debug' if DEBUG else None
+    if exp_name == '':
+        exp_name = variant['env_name']
+    if DEBUG:
+        exp_id = 'debug'
+        exp_name = 'dev-' + exp_name
+    else:
+        exp_id = None
     experiment_log_dir = setup_logger(
-        'dev',
-        # variant['env_name'],
+        exp_name,
         variant=variant, exp_id=exp_id, base_log_dir=variant['util_params']['base_log_dir'])
 
     # optionally save eval trajectories as pkl files
@@ -135,7 +140,8 @@ def deep_update_dict(fr, to):
 @click.option('--gpu', default=0)
 @click.option('--docker', is_flag=True, default=False)
 @click.option('--debug', is_flag=True, default=False)
-def main(config, gpu, docker, debug):
+@click.option('--exp_name', default='')
+def main(config, gpu, docker, debug, exp_name):
 
     variant = default_config
     if config:
@@ -144,7 +150,7 @@ def main(config, gpu, docker, debug):
         variant = deep_update_dict(exp_params, variant)
     variant['util_params']['gpu_id'] = gpu
 
-    experiment(variant)
+    experiment(variant, exp_name)
 
 if __name__ == "__main__":
     main()
