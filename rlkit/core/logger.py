@@ -320,3 +320,184 @@ def record_tabular_misc_stat(key, values, placement='back'):
         record_tabular(prefix + "Median" + suffix, np.nan)
         record_tabular(prefix + "Min" + suffix, np.nan)
         record_tabular(prefix + "Max" + suffix, np.nan)
+
+
+def setup_logger(
+        logger,
+        exp_name,
+        base_log_dir,
+        variant=None,
+        text_log_file="debug.log",
+        variant_log_file="variant.json",
+        tabular_log_file="progress.csv",
+        snapshot_mode="last",
+        snapshot_gap=1,
+        log_tabular_only=False,
+        log_dir=None,
+        tensorboard=False,
+        unique_id=None,
+        git_infos=None,
+        script_name=None,
+        run_id=None,
+        push_prefix=True,
+        **create_log_dir_kwargs
+):
+    """
+    Set up logger to have some reasonable default settings.
+    Will save log output to
+        based_log_dir/exp_name/exp_name.
+    exp_name will be auto-generated to be unique.
+    If log_dir is specified, then that directory is used as the output dir.
+    :param exp_name: The sub-directory for this specific experiment.
+    :param variant:
+    :param base_log_dir: The directory where all log should be saved.
+    :param text_log_file:
+    :param variant_log_file:
+    :param tabular_log_file:
+    :param snapshot_mode:
+    :param log_tabular_only:
+    :param snapshot_gap:
+    :param log_dir:
+    :return:
+    """
+    logger.reset()
+    variant = variant or {}
+    unique_id = unique_id or str(uuid.uuid4())
+
+    first_time = log_dir is None
+    if first_time:
+        log_dir = create_log_dir(
+            exp_name=exp_name,
+            base_log_dir=base_log_dir,
+            variant=variant,
+            run_id=run_id,
+            **create_log_dir_kwargs
+        )
+
+    if tensorboard:
+        tensorboard_log_path = osp.join(log_dir, "tensorboard")
+        logger.add_tensorboard_output(tensorboard_log_path)
+
+    logger.log("Variant:")
+    variant_to_save = variant.copy()
+    variant_to_save['unique_id'] = unique_id
+    variant_to_save['exp_name'] = exp_name
+    variant_to_save['trial_name'] = log_dir.split('/')[-1]
+    logger.log(
+        json.dumps(ppp.dict_to_safe_json(variant_to_save, sort=True), indent=2)
+    )
+    variant_log_path = osp.join(log_dir, variant_log_file)
+    logger.log_variant(variant_log_path, variant_to_save)
+
+    tabular_log_path = osp.join(log_dir, tabular_log_file)
+    text_log_path = osp.join(log_dir, text_log_file)
+
+    logger.add_text_output(text_log_path)
+    if first_time:
+        logger.add_tabular_output(tabular_log_path)
+    else:
+        logger._add_output(tabular_log_path, logger._tabular_outputs,
+                           logger._tabular_fds, mode='a')
+        for tabular_fd in logger._tabular_fds:
+            logger._tabular_header_written.add(tabular_fd)
+    logger.set_snapshot_dir(log_dir)
+    logger.set_snapshot_mode(snapshot_mode)
+    logger.set_snapshot_gap(snapshot_gap)
+    logger.set_log_tabular_only(log_tabular_only)
+    exp_name = log_dir.split("/")[-1]
+    if push_prefix:
+        logger.push_prefix("[%s] " % exp_name)
+
+    if git_infos:
+        save_git_infos(git_infos, log_dir)
+    if script_name:
+        with open(osp.join(log_dir, "script_name.txt"), "w") as f:
+            f.write(script_name)
+    return log_dir
+
+
+def save_git_infos(git_infos, log_dir):
+    for (
+            directory, code_diff, code_diff_staged, commit_hash, branch_name
+    ) in git_infos:
+        if directory[-1] == '/':
+            diff_file_name = directory[1:-1].replace("/", "-") + ".patch"
+            diff_staged_file_name = (
+                    directory[1:-1].replace("/", "-") + "_staged.patch"
+            )
+        else:
+            diff_file_name = directory[1:].replace("/", "-") + ".patch"
+            diff_staged_file_name = (
+                    directory[1:].replace("/", "-") + "_staged.patch"
+            )
+        if code_diff is not None and len(code_diff) > 0:
+            with open(osp.join(log_dir, diff_file_name), "w") as f:
+                f.write(code_diff + '\n')
+        if code_diff_staged is not None and len(code_diff_staged) > 0:
+            with open(osp.join(log_dir, diff_staged_file_name), "w") as f:
+                f.write(code_diff_staged + '\n')
+        with open(osp.join(log_dir, "git_infos.txt"), "a") as f:
+            f.write("directory: {}".format(directory))
+            f.write('\n')
+            f.write("git hash: {}".format(commit_hash))
+            f.write('\n')
+            f.write("git branch name: {}".format(branch_name))
+            f.write('\n\n')
+
+
+def create_log_dir(
+        exp_name,
+        base_log_dir,
+        exp_id=0,
+        seed=0,
+        variant=None,
+        trial_dir_suffix=None,
+        add_time_suffix=True,
+        include_exp_name_sub_dir=True,
+        run_id=None,
+):
+    """
+    Creates and returns a unique log directory.
+    :param exp_name: All experiments with this prefix will have log
+    directories be under this directory.
+    :param exp_id: Different exp_ids will be in different directories.
+    :return:
+    """
+    if run_id is not None:
+        exp_id = variant["exp_id"]
+        if variant.get("num_exps_per_instance", 0) > 1:
+            now = datetime.datetime.now(dateutil.tz.tzlocal())
+            timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
+            trial_name = "run%s/id%s/%s--s%d" % (run_id, exp_id, timestamp, seed)
+        else:
+            trial_name = "run{}/id{}".format(run_id, exp_id)
+    else:
+        trial_name = create_trial_name(exp_name, exp_id=exp_id, seed=seed, add_time_suffix=add_time_suffix)
+    if trial_dir_suffix is not None:
+        trial_name = "{}-{}".format(trial_name, trial_dir_suffix)
+    if include_exp_name_sub_dir:
+        log_dir = osp.join(base_log_dir, exp_name.replace("_", "-"), trial_name)
+    else:
+        log_dir = osp.join(base_log_dir, trial_name)
+    if osp.exists(log_dir):
+        print("WARNING: Log directory already exists {}".format(log_dir))
+    os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
+
+def create_trial_name(exp_name, exp_id=0, seed=0, add_time_suffix=True):
+    """
+    Create a semi-unique experiment name that has a timestamp
+    :param exp_name:
+    :param exp_id:
+    :return:
+    """
+    now = datetime.datetime.now(dateutil.tz.tzlocal())
+    timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
+    if add_time_suffix:
+        return "%s_%s_id%03d--s%d" % (exp_name, timestamp, exp_id, seed)
+    else:
+        return "%s_id%03d--s%d" % (exp_name, exp_id, seed)
+
+
+logger = Logger()
