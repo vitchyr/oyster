@@ -2,10 +2,10 @@ import numpy as np
 from gym import spaces
 from gym import Env
 
-from . import register_env
+# from . import register_env
 
 
-@register_env('point-robot')
+# @register_env('point-robot')
 class PointEnv(Env):
     """
     point robot on a 2-D plane with position control
@@ -76,7 +76,7 @@ class PointEnv(Env):
         print('current state:', self._state)
 
 
-@register_env('sparse-point-robot')
+# @register_env('sparse-point-robot')
 class SparsePointEnv(PointEnv):
     '''
      - tasks sampled from unit half-circle

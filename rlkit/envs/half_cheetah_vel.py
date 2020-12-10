@@ -1,10 +1,10 @@
 import numpy as np
 
-from . import register_env
+# from . import register_env
 from .half_cheetah import HalfCheetahEnv
 
 
-@register_env('cheetah-vel')
+# @register_env('cheetah-vel')
 class HalfCheetahVelEnv(HalfCheetahEnv):
     """Half-cheetah environment with target velocity, as described in [1]. The
     code is adapted from
