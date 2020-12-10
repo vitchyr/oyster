@@ -3,198 +3,41 @@ Based on rllab's logger.
 
 https://github.com/rll/rllab
 """
-from enum import Enum
-from contextlib import contextmanager
-import numpy as np
-import os
-import os.path as osp
-import sys
-import datetime
-import dateutil.tz
 import csv
+import datetime
+import errno
 import joblib
 import json
+import os
+import os.path as osp
 import pickle
-import base64
-import errno
+import sys
 import torch
+from collections import OrderedDict
+from contextlib import contextmanager
+from enum import Enum
+from pathlib import Path
+
+import dateutil.tz
+import dateutil.tz
+import numpy as np
+import uuid
 
 from rlkit.core.tabulate import tabulate
+from rlkit import pythonplusplus as ppp
 
 
-def mkdir_p(path):
-    try:
-        os.makedirs(path)
-    except OSError as exc:  # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(path):
-            pass
-        else:
-            raise
+def add_prefix(log_dict: OrderedDict, prefix: str, divider=''):
+    with_prefix = OrderedDict()
+    for key, val in log_dict.items():
+        with_prefix[prefix + divider + key] = val
+    return with_prefix
 
 
-_prefixes = []
-_prefix_str = ''
-
-_tabular_prefixes = []
-_tabular_prefix_str = ''
-
-_tabular = []
-
-_text_outputs = []
-_tabular_outputs = []
-
-_text_fds = {}
-_tabular_fds = {}
-_tabular_header_written = set()
-
-_snapshot_dir = None
-_snapshot_mode = 'all'
-_snapshot_gap = 1
-
-_log_tabular_only = False
-_header_printed = False
-
-
-def _add_output(file_name, arr, fds, mode='a'):
-    if file_name not in arr:
-        mkdir_p(os.path.dirname(file_name))
-        arr.append(file_name)
-        fds[file_name] = open(file_name, mode)
-
-
-def _remove_output(file_name, arr, fds):
-    if file_name in arr:
-        fds[file_name].close()
-        del fds[file_name]
-        arr.remove(file_name)
-
-
-def push_prefix(prefix):
-    _prefixes.append(prefix)
-    global _prefix_str
-    _prefix_str = ''.join(_prefixes)
-
-
-def add_text_output(file_name):
-    _add_output(file_name, _text_outputs, _text_fds, mode='a')
-
-
-def remove_text_output(file_name):
-    _remove_output(file_name, _text_outputs, _text_fds)
-
-
-def add_tabular_output(file_name):
-    _add_output(file_name, _tabular_outputs, _tabular_fds, mode='w')
-
-
-def remove_tabular_output(file_name):
-    if _tabular_fds[file_name] in _tabular_header_written:
-        _tabular_header_written.remove(_tabular_fds[file_name])
-    _remove_output(file_name, _tabular_outputs, _tabular_fds)
-
-
-def set_snapshot_dir(dir_name):
-    global _snapshot_dir
-    _snapshot_dir = dir_name
-
-
-def get_snapshot_dir():
-    return _snapshot_dir
-
-
-def get_snapshot_mode():
-    return _snapshot_mode
-
-
-def set_snapshot_mode(mode):
-    global _snapshot_mode
-    _snapshot_mode = mode
-
-
-def get_snapshot_gap():
-    return _snapshot_gap
-
-
-def set_snapshot_gap(gap):
-    global _snapshot_gap
-    _snapshot_gap = gap
-
-
-def set_log_tabular_only(log_tabular_only):
-    global _log_tabular_only
-    _log_tabular_only = log_tabular_only
-
-
-def get_log_tabular_only():
-    return _log_tabular_only
-
-
-def log(s, with_prefix=True, with_timestamp=True):
-    out = s
-    if with_prefix:
-        out = _prefix_str + out
-    if with_timestamp:
-        now = datetime.datetime.now(dateutil.tz.tzlocal())
-        timestamp = now.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
-        out = "%s | %s" % (timestamp, out)
-    if not _log_tabular_only:
-        # Also log to stdout
-        print(out)
-        for fd in list(_text_fds.values()):
-            fd.write(out + '\n')
-            fd.flush()
-        sys.stdout.flush()
-
-
-def record_tabular(key, val):
-    _tabular.append((_tabular_prefix_str + str(key), str(val)))
-
-
-def push_tabular_prefix(key):
-    _tabular_prefixes.append(key)
-    global _tabular_prefix_str
-    _tabular_prefix_str = ''.join(_tabular_prefixes)
-
-
-def pop_tabular_prefix():
-    del _tabular_prefixes[-1]
-    global _tabular_prefix_str
-    _tabular_prefix_str = ''.join(_tabular_prefixes)
-
-
-def save_extra_data(data, path='extra_data', ext='.pkl'):
-    """
-    Data saved here will always override the last entry
-
-    :param data: Something pickle'able.
-    """
-    file_name = osp.join(_snapshot_dir, path + ext)
-    with open(file_name, 'wb') as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-def get_table_dict():
-    return dict(_tabular)
-
-
-def get_table_key_set():
-    return set(key for key, value in _tabular)
-
-
-@contextmanager
-def prefix(key):
-    push_prefix(key)
-    try:
-        yield
-    finally:
-        pop_prefix()
-
-
-@contextmanager
-def tabular_prefix(key):
-    push_tabular_prefix(key)
-    yield
-    pop_tabular_prefix()
+def append_log(log_dict, to_add_dict, prefix=None):
+    if prefix is not None:
+        to_add_dict = add_prefix(to_add_dict, prefix=prefix)
+    return log_dict.update(to_add_dict)
 
 
 class TerminalTablePrinter(object):
@@ -219,107 +62,297 @@ class TerminalTablePrinter(object):
         sys.stdout.write("\n")
 
 
-table_printer = TerminalTablePrinter()
-
-
-def dump_tabular(*args, **kwargs):
-    wh = kwargs.pop("write_header", None)
-    if len(_tabular) > 0:
-        if _log_tabular_only:
-            table_printer.print_tabular(_tabular)
-        else:
-            for line in tabulate(_tabular).split('\n'):
-                log(line, *args, **kwargs)
-        tabular_dict = dict(_tabular)
-        # Also write to the csv files
-        # This assumes that the keys in each iteration won't change!
-        for tabular_fd in list(_tabular_fds.values()):
-            writer = csv.DictWriter(tabular_fd,
-                                    fieldnames=list(tabular_dict.keys()))
-            if wh or (wh is None and tabular_fd not in _tabular_header_written):
-                writer.writeheader()
-                _tabular_header_written.add(tabular_fd)
-            writer.writerow(tabular_dict)
-            tabular_fd.flush()
-        del _tabular[:]
-
-
-def pop_prefix():
-    del _prefixes[-1]
-    global _prefix_str
-    _prefix_str = ''.join(_prefixes)
-
-def save_weights(weights, names):
-    ''' save network weights to given paths '''
-    # NOTE: breaking abstraction by adding torch dependence here
-    for w, n in zip(weights, names):
-        torch.save(w, n)
-
-def save_itr_params(itr, params_dict):
-    ''' snapshot model parameters '''
-    # NOTE: assumes dict is ordered, should fix someday
-    names = params_dict.keys()
-    params = params_dict.values()
-    if _snapshot_dir:
-        if _snapshot_mode == 'all':
-            # save for every training iteration
-            file_names = [osp.join(_snapshot_dir, n + '_itr_%d.pth' % itr) for n in names]
-            save_weights(params, file_names)
-        elif _snapshot_mode == 'last':
-            # override previous params
-            file_names = [osp.join(_snapshot_dir, n + '.pth') for n in names]
-            save_weights(params, file_names)
-        elif _snapshot_mode == "gap":
-            if itr % _snapshot_gap == 0:
-                file_names = [osp.join(_snapshot_dir, n + '_itr_%d.pth' % itr) for n in names]
-                save_weights(params, file_names)
-        elif _snapshot_mode == "gap_and_last":
-            if itr % _snapshot_gap == 0:
-                file_names = [osp.join(_snapshot_dir, n + '_itr_%d.pth' % itr) for n in names]
-                save_weights(params, file_names)
-            file_names = [osp.join(_snapshot_dir, n + '.pth') for n in names]
-            save_weights(params, file_names)
-        elif _snapshot_mode == 'none':
-            pass
-        else:
-            raise NotImplementedError
-
-
 class MyEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, type):
             return {'$class': o.__module__ + "." + o.__name__}
         elif isinstance(o, Enum):
             return {
-                '$enum': o.__module__ + "." + o.__class__.__name__ + '.' + o.name}
+                '$enum': o.__module__ + "." + o.__class__.__name__ + '.' + o.name
+            }
+        elif callable(o):
+            return {
+                '$function': o.__module__ + "." + o.__name__
+            }
         return json.JSONEncoder.default(self, o)
 
 
-def log_variant(log_file, variant_data):
-    mkdir_p(os.path.dirname(log_file))
-    with open(log_file, "w") as f:
-        json.dump(variant_data, f, indent=2, sort_keys=True, cls=MyEncoder)
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 
 
-def record_tabular_misc_stat(key, values, placement='back'):
-    if placement == 'front':
-        prefix = ""
-        suffix = key
-    else:
-        prefix = key
-        suffix = ""
-    if len(values) > 0:
-        record_tabular(prefix + "Average" + suffix, np.average(values))
-        record_tabular(prefix + "Std" + suffix, np.std(values))
-        record_tabular(prefix + "Median" + suffix, np.median(values))
-        record_tabular(prefix + "Min" + suffix, np.min(values))
-        record_tabular(prefix + "Max" + suffix, np.max(values))
-    else:
-        record_tabular(prefix + "Average" + suffix, np.nan)
-        record_tabular(prefix + "Std" + suffix, np.nan)
-        record_tabular(prefix + "Median" + suffix, np.nan)
-        record_tabular(prefix + "Min" + suffix, np.nan)
-        record_tabular(prefix + "Max" + suffix, np.nan)
+class Logger(object):
+    def __init__(self):
+        self._prefixes = []
+        self._prefix_str = ''
+
+        self._tabular_prefixes = []
+        self._tabular_prefix_str = ''
+
+        self._tabular = []
+
+        self._text_outputs = []
+        self._tabular_outputs = []
+        self._tabular_keys = None
+
+        self._text_fds = {}
+        self._tabular_fds = {}
+        self._tabular_header_written = set()
+
+        self._snapshot_dir = None
+        self._snapshot_mode = 'all'
+        self._snapshot_gap = 1
+
+        self._log_tabular_only = False
+        self._header_printed = False
+        self.table_printer = TerminalTablePrinter()
+
+        self._use_tensorboard = False
+        self.epoch = 0
+
+        self._save_param_mode = 'torch'
+
+    def reset(self):
+        self.__init__()
+
+    def _add_output(self, file_name, arr, fds, mode='a'):
+        if file_name not in arr:
+            mkdir_p(os.path.dirname(file_name))
+            arr.append(file_name)
+            fds[file_name] = open(file_name, mode)
+
+    def _remove_output(self, file_name, arr, fds):
+        if file_name in arr:
+            fds[file_name].close()
+            del fds[file_name]
+            arr.remove(file_name)
+        self._tabular_keys=None
+
+    def push_prefix(self, prefix):
+        self._prefixes.append(prefix)
+        self._prefix_str = ''.join(self._prefixes)
+
+    def add_text_output(self, file_name):
+        self._add_output(file_name, self._text_outputs, self._text_fds,
+                         mode='a')
+
+    def add_tensorboard_output(self, file_name):
+        import tensorboard_logger
+        self._use_tensorboard = True
+        self.tensorboard_logger = tensorboard_logger.Logger(file_name)
+
+    def remove_text_output(self, file_name):
+        self._remove_output(file_name, self._text_outputs, self._text_fds)
+
+    def add_tabular_output(self, file_name, relative_to_snapshot_dir=False):
+        if relative_to_snapshot_dir:
+            file_name = osp.join(self._snapshot_dir, file_name)
+        self._add_output(file_name, self._tabular_outputs, self._tabular_fds,
+                         mode='w')
+
+    def remove_tabular_output(self, file_name, relative_to_snapshot_dir=False):
+        if relative_to_snapshot_dir:
+            file_name = osp.join(self._snapshot_dir, file_name)
+        if self._tabular_fds[file_name] in self._tabular_header_written:
+            self._tabular_header_written.remove(self._tabular_fds[file_name])
+        self._remove_output(file_name, self._tabular_outputs, self._tabular_fds)
+
+    def set_snapshot_dir(self, dir_name):
+        self._snapshot_dir = dir_name
+
+    def get_snapshot_dir(self, ):
+        return self._snapshot_dir
+
+    def get_snapshot_mode(self, ):
+        return self._snapshot_mode
+
+    def set_snapshot_mode(self, mode):
+        self._snapshot_mode = mode
+
+    def get_snapshot_gap(self, ):
+        return self._snapshot_gap
+
+    def set_snapshot_gap(self, gap):
+        self._snapshot_gap = gap
+
+    def get_save_param_mode(self, ):
+        return self._save_param_mode
+
+    def set_save_param_mode(self, mode):
+        assert mode in ['pickle', 'torch', 'joblib']
+        self._save_param_mode = mode
+
+    def set_log_tabular_only(self, log_tabular_only):
+        self._log_tabular_only = log_tabular_only
+
+    def get_log_tabular_only(self, ):
+        return self._log_tabular_only
+
+    def log(self, s, with_prefix=True, with_timestamp=True):
+        out = s
+        if with_prefix:
+            out = self._prefix_str + out
+        if with_timestamp:
+            now = datetime.datetime.now(dateutil.tz.tzlocal())
+            timestamp = now.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+            out = "%s | %s" % (timestamp, out)
+        if not self._log_tabular_only:
+            # Also log to stdout
+            print(out)
+            for fd in list(self._text_fds.values()):
+                fd.write(out + '\n')
+                fd.flush()
+            sys.stdout.flush()
+
+    def record_tabular(self, key, val):
+        self._tabular.append((self._tabular_prefix_str + str(key), str(val)))
+        if self._use_tensorboard:
+            self.tensorboard_logger.log_value(self._tabular_prefix_str + str(key), val, self.epoch)
+
+    def record_dict(self, d, prefix=None):
+        if prefix is not None:
+            self.push_tabular_prefix(prefix)
+        for k, v in d.items():
+            self.record_tabular(k, v)
+        if prefix is not None:
+            self.pop_tabular_prefix()
+
+    def push_tabular_prefix(self, key):
+        self._tabular_prefixes.append(key)
+        self._tabular_prefix_str = ''.join(self._tabular_prefixes)
+
+    def pop_tabular_prefix(self, ):
+        del self._tabular_prefixes[-1]
+        self._tabular_prefix_str = ''.join(self._tabular_prefixes)
+
+    def save_extra_data(self, data, path='extra_data', mode='joblib'):
+        """
+        Data saved here will always override the last entry
+
+        :param data: Something pickle'able.
+        """
+        file_name = osp.join(self._snapshot_dir, path)
+        self._save_params_to_file(data, file_name, mode=mode)
+        return file_name
+
+    def get_table_dict(self, ):
+        return dict(self._tabular)
+
+    def get_table_key_set(self, ):
+        return set(key for key, value in self._tabular)
+
+    @contextmanager
+    def prefix(self, key):
+        self.push_prefix(key)
+        try:
+            yield
+        finally:
+            self.pop_prefix()
+
+    @contextmanager
+    def tabular_prefix(self, key):
+        self.push_tabular_prefix(key)
+        yield
+        self.pop_tabular_prefix()
+
+    def log_variant(self, log_file, variant_data):
+        mkdir_p(os.path.dirname(log_file))
+        with open(log_file, "w") as f:
+            json.dump(variant_data, f, indent=2, sort_keys=True, cls=MyEncoder)
+
+    def record_tabular_misc_stat(self, key, values, placement='back'):
+        if placement == 'front':
+            prefix = ""
+            suffix = key
+        else:
+            prefix = key
+            suffix = ""
+        if len(values) > 0:
+            self.record_tabular(prefix + "Average" + suffix, np.average(values))
+            self.record_tabular(prefix + "Std" + suffix, np.std(values))
+            self.record_tabular(prefix + "Median" + suffix, np.median(values))
+            self.record_tabular(prefix + "Min" + suffix, np.min(values))
+            self.record_tabular(prefix + "Max" + suffix, np.max(values))
+        else:
+            self.record_tabular(prefix + "Average" + suffix, np.nan)
+            self.record_tabular(prefix + "Std" + suffix, np.nan)
+            self.record_tabular(prefix + "Median" + suffix, np.nan)
+            self.record_tabular(prefix + "Min" + suffix, np.nan)
+            self.record_tabular(prefix + "Max" + suffix, np.nan)
+
+    def dump_tabular(self, *args, **kwargs):
+        self.epoch += 1
+        wh = kwargs.pop("write_header", None)
+        if len(self._tabular) > 0:
+            if self._log_tabular_only:
+                self.table_printer.print_tabular(self._tabular)
+            else:
+                for line in tabulate(self._tabular).split('\n'):
+                    self.log(line, *args, **kwargs)
+            tabular_dict = dict(self._tabular)
+
+            # Only saves keys in first iteration to CSV!
+            # (But every key is printed out in text)
+            if self._tabular_keys is None:
+                self._tabular_keys = list(sorted(tabular_dict.keys()))
+
+            # Write to the csv files
+            for tabular_fd in list(self._tabular_fds.values()):
+                writer = csv.DictWriter(tabular_fd,
+                                        fieldnames=self._tabular_keys,
+                                        extrasaction="ignore",)
+                if wh or (
+                        wh is None and tabular_fd not in self._tabular_header_written):
+                    writer.writeheader()
+                    self._tabular_header_written.add(tabular_fd)
+                writer.writerow(tabular_dict)
+                tabular_fd.flush()
+            del self._tabular[:]
+
+    def pop_prefix(self, ):
+        del self._prefixes[-1]
+        self._prefix_str = ''.join(self._prefixes)
+
+    def _save_params_to_file(self, params, file_path, mode):
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        if mode == 'joblib':
+            joblib.dump(params, file_path + ".pkl", compress=3)
+        elif mode == 'pickle':
+            pickle.dump(params, open(file_path + ".pkl", "wb"))
+        elif mode == 'torch':
+            torch.save(params, file_path + ".pt")
+        else:
+            raise ValueError("Invalid mode: {}".format(mode))
+
+    def save_itr_params(self, itr, params):
+        if self._snapshot_dir:
+            if self._snapshot_mode == 'all':
+                file_name = osp.join(self._snapshot_dir, 'itr_%d' % itr)
+                self._save_params_to_file(params, file_name, mode=self._save_param_mode)
+            elif self._snapshot_mode == 'last':
+                # override previous params
+                file_name = osp.join(self._snapshot_dir, 'params')
+                self._save_params_to_file(params, file_name, mode=self._save_param_mode)
+            elif self._snapshot_mode == "gap":
+                if itr % self._snapshot_gap == 0:
+                    file_name = osp.join(self._snapshot_dir, 'itr_%d' % itr)
+                    self._save_params_to_file(params, file_name, mode=self._save_param_mode)
+            elif self._snapshot_mode == "gap_and_last":
+                if itr % self._snapshot_gap == 0:
+                    file_name = osp.join(self._snapshot_dir, 'itr_%d' % itr)
+                    self._save_params_to_file(params, file_name, mode=self._save_param_mode)
+                file_name = osp.join(self._snapshot_dir, 'params')
+                self._save_params_to_file(params, file_name, mode=self._save_param_mode)
+            elif self._snapshot_mode == 'none':
+                pass
+            else:
+                raise NotImplementedError
 
 
 def setup_logger(
@@ -339,7 +372,6 @@ def setup_logger(
         git_infos=None,
         script_name=None,
         run_id=None,
-        push_prefix=True,
         **create_log_dir_kwargs
 ):
     """
@@ -405,8 +437,7 @@ def setup_logger(
     logger.set_snapshot_gap(snapshot_gap)
     logger.set_log_tabular_only(log_tabular_only)
     exp_name = log_dir.split("/")[-1]
-    if push_prefix:
-        logger.push_prefix("[%s] " % exp_name)
+    logger.push_prefix("[%s] " % exp_name)
 
     if git_infos:
         save_git_infos(git_infos, log_dir)
