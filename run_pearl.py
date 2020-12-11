@@ -186,20 +186,20 @@ def main(config, debug, exp_name, mode, gpu, nseeds):
             # 20,
             30,
             # 100,
-            9999,
+            # 9999,
         ],
         'algo_params.freeze_encoder_buffer_in_unsupervised_phase': [
             True,
-            # False,
+            False,
         ],
         'algo_params.train_reward_pred_in_unsupervised_phase': [
             # True,
             False,
         ],
-        # 'algo_params.use_encoder_snapshot_for_reward_pred_in_unsupervised_phase': [
-        #     # True,
-        #     False,
-        # ],
+        'algo_params.use_encoder_snapshot_for_reward_pred_in_unsupervised_phase': [
+            True,
+            False,
+        ],
     }
     sweeper = hyp.DeterministicHyperparameterSweeper(
         search_space, default_parameters=variant,
