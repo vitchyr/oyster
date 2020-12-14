@@ -4,10 +4,10 @@ from rlkit.envs.half_cheetah_dir import HalfCheetahDirEnv
 from rlkit.envs.half_cheetah_vel import HalfCheetahVelEnv
 from rlkit.envs.humanoid_dir import HumanoidDirEnv
 from rlkit.envs.point_robot import PointEnv, SparsePointEnv
-# from rlkit.envs.hopper_rand_params_wrapper import \
-#     HopperRandParamsWrappedEnv
-# from rlkit.envs.walker_rand_params_wrapper import \
-#     WalkerRandParamsWrappedEnv
+from rlkit.envs.hopper_rand_params_wrapper import \
+    HopperRandParamsWrappedEnv
+from rlkit.envs.walker_rand_params_wrapper import \
+    WalkerRandParamsWrappedEnv
 
 ENVS = {}
 
@@ -24,6 +24,7 @@ def register_env(name):
         return fn
 
     return register_env_fn
+
 
 def _register_env(name, fn):
     """Registers a env by name for instantiation in rlkit."""
@@ -42,5 +43,5 @@ def register_pearl_envs():
     _register_env('cheetah-vel', HalfCheetahVelEnv)
     _register_env('humanoid-dir', HumanoidDirEnv)
     _register_env('point-robot', PointEnv)
-    # _register_env('walker-rand-params', WalkerRandParamsWrappedEnv)
-    # _register_env('hopper-rand-params', HopperRandParamsWrappedEnv)
+    _register_env('walker-rand-params', WalkerRandParamsWrappedEnv)
+    _register_env('hopper-rand-params', HopperRandParamsWrappedEnv)

@@ -234,18 +234,18 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             kl_loss.backward(retain_graph=True)
 
         # reward prediction loop
-        if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
-            t_rp, b_rp, _ = context_dict['observations'].shape
-            obs_rp = context_dict['observations'].view(t_rp * b_rp, -1)
-            actions_rp = context_dict['actions'].view(t_rp * b_rp, -1)
-            _, task_z_rp = self.agent(context_dict['observations'], context)
-            if self.back_prop_reward_prediction_into_encoder:
-                reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp)
-            else:
-                reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp.detach())
+        t_rp, b_rp, _ = context_dict['observations'].shape
+        obs_rp = context_dict['observations'].view(t_rp * b_rp, -1)
+        actions_rp = context_dict['actions'].view(t_rp * b_rp, -1)
+        _, task_z_rp = self.agent(context_dict['observations'], context)
+        if self.back_prop_reward_prediction_into_encoder:
+            reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp)
+        else:
+            reward_pred = self.agent.reward_predictor(obs_rp, actions_rp, task_z_rp.detach())
 
-            rewards_rp = context_dict['rewards'].view(t_rp * b_rp, -1)
-            reward_pred_loss = self.reward_pred_criterion(reward_pred, rewards_rp)
+        rewards_rp = context_dict['rewards'].view(t_rp * b_rp, -1)
+        reward_pred_loss = self.reward_pred_criterion(reward_pred, rewards_rp)
+        if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
             self.reward_predictor_optimizer.zero_grad()
 
         # qf and encoder update (note encoder does not get grads from policy or vf)
@@ -316,11 +316,8 @@ class PEARLSoftActorCritic(MetaRLAlgorithm):
             self.eval_statistics['Policy Loss'] = np.mean(ptu.get_numpy(
                 policy_loss
             ))
-            if not self.in_unsupervised_phase or self.train_reward_pred_in_unsupervised_phase:
-                self.eval_statistics['Reward Prediction Loss'] = np.mean(
-                    ptu.get_numpy(reward_pred_loss))
-            else:
-                self.eval_statistics['Reward Prediction Loss'] = 0
+            self.eval_statistics['Reward Prediction Loss'] = np.mean(
+                ptu.get_numpy(reward_pred_loss))
             self.eval_statistics.update(create_stats_ordered_dict(
                 'Q Predictions',
                 ptu.get_numpy(q1_pred),
